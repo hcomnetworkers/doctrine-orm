@@ -27,6 +27,7 @@ use Doctrine\ORM\Query\ResultSetMapping;
 use Doctrine\ORM\Proxy\ProxyFactory;
 use Doctrine\ORM\Query\FilterCollection;
 use Doctrine\Common\Util\ClassUtils;
+use HContent\CoreBundle\Library\Core\Exceptions\InvalidArgumentException;
 
 /**
  * The EntityManager is the central access point to ORM functionality.
@@ -876,5 +877,41 @@ use Doctrine\Common\Util\ClassUtils;
     public function hasFilters()
     {
         return null !== $this->filterCollection;
+    }
+
+    /**
+     * Cache for entity metas mapped by table name
+     * @var ClassMetadata[string]
+     */
+    private $cacheTableToMetas;
+
+    /**
+     * Gets the entity metadata for a table name
+     * @param string $table
+     * @return ClassMetadata|null
+     */
+    public function getEntityMetasForTable($table) {
+        if (!$this->cacheTableToMetas) {
+            $this->cacheTableToMetas = [];
+            $classNames = $this->getConfiguration()->getMetadataDriverImpl()->getAllClassNames();
+            foreach ($classNames as $className) {
+                $classMetaData = $this->getClassMetadata($className);
+                $this->cacheTableToMetas[$classMetaData->getTableName()] = $classMetaData;
+            }
+        }
+        return isset($this->cacheTableToMetas[$table]) ? $this->cacheTableToMetas[$table] : null;
+    }
+
+    /**
+     * Gets a repository for a table name
+     * @param string $table
+     * @return \Doctrine\ORM\EntityRepository
+     */
+    public function getRepositoryForTable($table) {
+        $meta = $this->getEntityMetasForTable($table);
+        if ($meta) {
+            return $this->getRepository($meta->getName());
+        }
+        throw new InvalidArgumentException("Table $table has no corresponding entity");
     }
 }

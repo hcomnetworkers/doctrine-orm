@@ -50,6 +50,7 @@ use Doctrine\ORM\Persisters\Collection\OneToManyPersister;
 use Doctrine\ORM\Persisters\Collection\ManyToManyPersister;
 use Doctrine\ORM\Utility\IdentifierFlattener;
 use Doctrine\ORM\Cache\AssociationCacheEntry;
+use HContent\CoreBundle\Entity\ITranslationContaining;
 
 /**
  * The UnitOfWork is responsible for tracking changes to objects during an
@@ -294,6 +295,11 @@ class UnitOfWork implements PropertyChangedListener
     private $reflectionPropertiesGetter;
 
     /**
+     * @var array
+     */
+    private $entityTranslations = [];
+
+    /**
      * Initializes a new UnitOfWork instance, bound to the given EntityManager.
      *
      * @param EntityManagerInterface $em
@@ -349,6 +355,7 @@ class UnitOfWork implements PropertyChangedListener
         if ( ! ($this->entityInsertions ||
                 $this->entityDeletions ||
                 $this->entityUpdates ||
+                $this->entityTranslations ||
                 $this->collectionUpdates ||
                 $this->collectionDeletions ||
                 $this->orphanRemovals)) {
@@ -407,6 +414,11 @@ class UnitOfWork implements PropertyChangedListener
                 }
             }
 
+            if ($this->entityTranslations && $this->evm->hasListeners('commitDirtyTranslations')) {
+                $this->evm->dispatchEvent('commitDirtyTranslations',
+                    new CommitDirtyTranslationsEventArgs($this->entityTranslations));
+            }
+
             $conn->commit();
         } catch (Exception $e) {
             $this->em->close();
@@ -437,6 +449,7 @@ class UnitOfWork implements PropertyChangedListener
         $this->visitedCollections =
         $this->scheduledForSynchronization =
         $this->orphanRemovals = array();
+        $this->entityTranslations = [];
     }
 
     /**
@@ -749,6 +762,10 @@ class UnitOfWork implements PropertyChangedListener
                 $this->originalEntityData[$oid] = $actualData;
                 $this->entityUpdates[$oid]      = $entity;
             }
+        }
+
+        if ($entity instanceof ITranslationContaining && $entity->hasDirtyTranslations()) {
+            $this->entityTranslations[$oid] = $entity;
         }
     }
 
@@ -3504,5 +3521,13 @@ class UnitOfWork implements PropertyChangedListener
                 unset($this->entityInsertions[$hash]);
             }
         }
+    }
+
+    /**
+     * @return \Doctrine\ORM\Utility\IdentifierFlattener
+     */
+    public function getIdentifierFlattener()
+    {
+        return $this->identifierFlattener;
     }
 }
