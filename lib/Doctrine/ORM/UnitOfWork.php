@@ -51,6 +51,7 @@ use Doctrine\ORM\Persisters\Collection\ManyToManyPersister;
 use Doctrine\ORM\Utility\IdentifierFlattener;
 use Doctrine\ORM\Cache\AssociationCacheEntry;
 use HContent\CoreBundle\Entity\ITranslationContaining;
+use HContent\CoreBundle\Doctrine\ORM\CommitDirtyTranslationsEventArgs;
 
 /**
  * The UnitOfWork is responsible for tracking changes to objects during an
