@@ -377,6 +377,11 @@ class UnitOfWork implements PropertyChangedListener
         // Now we need a commit order to maintain referential integrity
         $commitOrder = $this->getCommitOrder();
 
+        $commitVars = $this->packCommitVars();
+        $tryCount = 0;
+        tryCommit:
+        $tryCount++;
+
         $conn = $this->em->getConnection();
         $conn->beginTransaction();
 
@@ -421,6 +426,33 @@ class UnitOfWork implements PropertyChangedListener
             }
 
             $conn->commit();
+        } catch (\Doctrine\DBAL\Exception\DriverException $e) {
+          //For a 40001 (Deadlock) we try the following:
+          // If we are on the top transaction level we issue a full retry of all the transaction changes.
+          // If we are not on the top level transaction we need to let the exception bubble up without closing the
+          // entity manager.
+          // NOTE: Now the entity manager is never closed if you encounter a deadlock and have an open transaction
+          //        outside this method!
+          if ((int)$e->getSQLState() === 40001 && $tryCount < 3) {
+            if ($conn->getTransactionNestingLevel() === 1) {
+              \Logger::warn("Deadlock encountered, retrying ($tryCount)", ['exception' => $e]);
+              $conn->rollback();
+              $this->afterTransactionRolledBack();
+              $this->prepareDeadlockRetry($commitVars);
+              goto tryCommit;
+            } else {
+              $conn->rollback();
+              $this->afterTransactionRolledBack();
+              throw $e;
+            }
+          } else {
+            $this->em->close();
+            $conn->rollback();
+
+            $this->afterTransactionRolledBack();
+
+            throw $e;
+          }
         } catch (Exception $e) {
             $this->em->close();
             $conn->rollback();
@@ -452,6 +484,82 @@ class UnitOfWork implements PropertyChangedListener
         $this->orphanRemovals = array();
         $this->entityTranslations = [];
     }
+
+  /**
+   * Packs all commit vars into one array for restoring them for a retry after a deadlock situation.
+   * Only for the top level transaction commit (before the transaction began).
+   *
+   * @return array
+   */
+  private function packCommitVars(): array {
+    if ($this->em->getConnection()->getTransactionNestingLevel() === 0) {
+      //keep track of the ids before the commit:
+      $preCommitIdMap = new \SplObjectStorage();
+      foreach ($this->entityInsertions as $entityToInsert) {
+        $class = $this->em->getClassMetadata(get_class($entityToInsert));
+        if ($class->idGenerator->isPostInsertGenerator()) {
+          $preCommitIdMap[$entityToInsert] = $class->reflFields[$class->identifier[0]]->getValue($entityToInsert);
+        }
+      }
+      return [
+        $this->entityInsertions,
+        $this->entityDeletions,
+        $this->entityUpdates,
+        $this->entityTranslations,
+        $this->collectionUpdates,
+        $this->collectionDeletions,
+        $this->orphanRemovals,
+        $this->extraUpdates,
+        $this->entityIdentifiers,
+        $this->entityStates,
+        $this->originalEntityData,
+        $this->entityChangeSets,
+        $this->visitedCollections,
+        $this->scheduledForSynchronization,
+        $this->identityMap,
+        $preCommitIdMap,
+      ];
+    }
+    return [];
+  }
+
+  /**
+   * Restores all the commit vars and resets the ids to retry after a transaction was rolled back due to a deadlock.
+   *
+   * @param array $commitVars
+   */
+  private function prepareDeadlockRetry(array $commitVars): void {
+    //Clear the persister instances:
+    $this->persisters = [];
+
+    //Unpack commit vars:
+    [
+      $this->entityInsertions,
+      $this->entityDeletions,
+      $this->entityUpdates,
+      $this->entityTranslations,
+      $this->collectionUpdates,
+      $this->collectionDeletions,
+      $this->orphanRemovals,
+      $this->extraUpdates,
+      $this->entityIdentifiers,
+      $this->entityStates,
+      $this->originalEntityData,
+      $this->entityChangeSets,
+      $this->visitedCollections,
+      $this->scheduledForSynchronization,
+      $this->identityMap,
+      $preCommitIdMap,
+    ] = $commitVars;
+
+    //Reset ids in new entities to whatever they were before the commit:
+    foreach ($this->entityInsertions as $entityToInsert) {
+      $class = $this->em->getClassMetadata(get_class($entityToInsert));
+      if ($class->idGenerator->isPostInsertGenerator()) {
+        $class->reflFields[$class->identifier[0]]->setValue($entityToInsert, $preCommitIdMap[$entityToInsert]);
+      }
+    }
+  }
 
     /**
      * Computes the changesets of all entities scheduled for insertion.
