@@ -379,7 +379,9 @@ class UnitOfWork implements PropertyChangedListener
 
         $commitVars = $this->packCommitVars();
         $tryCount = 0;
-        tryCommit:
+        $try = true;
+        while ($try) {
+        $try = false;
         $tryCount++;
 
         $conn = $this->em->getConnection();
@@ -439,8 +441,9 @@ class UnitOfWork implements PropertyChangedListener
               $conn->rollback();
               $this->afterTransactionRolledBack();
               $this->prepareDeadlockRetry($commitVars);
-              goto tryCommit;
+              $try = true;
             } else {
+              //no em->close() here!
               $conn->rollback();
               $this->afterTransactionRolledBack();
               throw $e;
@@ -448,9 +451,7 @@ class UnitOfWork implements PropertyChangedListener
           } else {
             $this->em->close();
             $conn->rollback();
-
             $this->afterTransactionRolledBack();
-
             throw $e;
           }
         } catch (Exception $e) {
@@ -461,6 +462,7 @@ class UnitOfWork implements PropertyChangedListener
 
             throw $e;
         }
+        } //end while($try)
 
         $this->afterTransactionComplete();
 
