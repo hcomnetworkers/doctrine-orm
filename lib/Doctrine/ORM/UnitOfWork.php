@@ -437,7 +437,7 @@ class UnitOfWork implements PropertyChangedListener
           //        outside this method!
           if ((int)$e->getSQLState() === 40001 && $tryCount < 3) {
             if ($conn->getTransactionNestingLevel() === 1) {
-              \Logger::warn("Deadlock encountered, retrying ($tryCount)", ['exception' => $e]);
+              \Application\Logger::warn("Deadlock encountered, retrying ($tryCount)", ['exception' => $e]);
               $conn->rollback();
               $this->afterTransactionRolledBack();
               $this->prepareDeadlockRetry($commitVars);
