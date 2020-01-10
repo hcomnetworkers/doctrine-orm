@@ -157,13 +157,15 @@ class EntityGenerator
         Type::DATE          => '\DateTime',
         Type::TIME          => '\DateTime',
         Type::OBJECT        => '\stdClass',
-        Type::BIGINT        => 'integer',
-        Type::SMALLINT      => 'integer',
+        Type::BIGINT        => 'int',
+        Type::SMALLINT      => 'int',
         Type::TEXT          => 'string',
         Type::BLOB          => 'string',
-        Type::DECIMAL       => 'string',
+        Type::DECIMAL       => 'float',
         Type::JSON_ARRAY    => 'array',
         Type::SIMPLE_ARRAY  => 'array',
+        Type::INTEGER       => 'int',
+        Type::BOOLEAN       => 'bool',
     );
 
     /**
@@ -212,9 +214,9 @@ class EntityGenerator
 
 <namespace>
 <useStatement>
+use HContent\CoreBundle\Library\Uuid\Uuid;
 <entityAnnotation>
-<entityClassName>
-{
+<entityClassName> {
 <entityBody>
 }
 ';
@@ -223,13 +225,7 @@ class EntityGenerator
      * @var string
      */
     protected static $getMethodTemplate =
-'/**
- * <description>
- *
- * @return <variableType>
- */
-public function <methodName>()
-{
+'public function <methodName>(): <variableType> {
 <spaces>return $this-><fieldName>;
 }';
 
@@ -237,15 +233,7 @@ public function <methodName>()
      * @var string
      */
     protected static $setMethodTemplate =
-'/**
- * <description>
- *
- * @param <variableType> $<variableName>
- *
- * @return <entity>
- */
-public function <methodName>(<methodTypeHint>$<variableName><variableDefault>)
-{
+'public function <methodName>(<variableType> $<variableName>): <entity> {
 <spaces>$this-><fieldName> = $<variableName>;
 
 <spaces>return $this;
@@ -255,15 +243,7 @@ public function <methodName>(<methodTypeHint>$<variableName><variableDefault>)
      * @var string
      */
     protected static $addMethodTemplate =
-'/**
- * <description>
- *
- * @param <variableType> $<variableName>
- *
- * @return <entity>
- */
-public function <methodName>(<methodTypeHint>$<variableName>)
-{
+'public function <methodName>(<variableType> $<variableName>): <entity> {
 <spaces>$this-><fieldName>[] = $<variableName>;
 
 <spaces>return $this;
@@ -273,13 +253,7 @@ public function <methodName>(<methodTypeHint>$<variableName>)
      * @var string
      */
     protected static $removeMethodTemplate =
-'/**
- * <description>
- *
- * @param <variableType> $<variableName>
- */
-public function <methodName>(<methodTypeHint>$<variableName>)
-{
+'public function <methodName>(<variableType> $<variableName>): void {
 <spaces>$this-><fieldName>->removeElement($<variableName>);
 }';
 
@@ -299,11 +273,7 @@ public function <methodName>()
      * @var string
      */
     protected static $constructorMethodTemplate =
-'/**
- * Constructor
- */
-public function __construct()
-{
+'public function __construct() {
 <spaces><collections>
 }
 ';
@@ -312,13 +282,7 @@ public function __construct()
      * @var string
      */
     protected static $embeddableConstructorMethodTemplate =
-'/**
- * Constructor
- *
- * <paramTags>
- */
-public function __construct(<params>)
-{
+'public function __construct(<params>) {
 <spaces><fields>
 }
 ';
@@ -341,10 +305,10 @@ public function __construct(<params>)
      *
      * @return void
      */
-    public function generate(array $metadatas, $outputDirectory)
+    public function generate(array $metadatas, $outputDirectory, bool $isPsr4 = false)
     {
         foreach ($metadatas as $metadata) {
-            $this->writeEntityClass($metadata, $outputDirectory);
+            $this->writeEntityClass($metadata, $outputDirectory, $isPsr4);
         }
     }
 
@@ -358,9 +322,13 @@ public function __construct(<params>)
      *
      * @throws \RuntimeException
      */
-    public function writeEntityClass(ClassMetadataInfo $metadata, $outputDirectory)
+    public function writeEntityClass(ClassMetadataInfo $metadata, $outputDirectory, bool $isPsr4 = false)
     {
-        $path = $outputDirectory . '/' . str_replace('\\', DIRECTORY_SEPARATOR, $metadata->name) . $this->extension;
+        if ($isPsr4) {
+            $path = $outputDirectory . '/' . basename(str_replace('\\', '/', $metadata->name)) . $this->extension;
+        } else {
+            $path = $outputDirectory . '/' . str_replace('\\', DIRECTORY_SEPARATOR, $metadata->name) . $this->extension;
+        }
         $dir = dirname($path);
 
         if ( ! is_dir($dir)) {
@@ -389,7 +357,6 @@ public function __construct(<params>)
         } elseif ( ! $this->isNew && $this->updateEntityIfExists) {
             file_put_contents($path, $this->generateUpdatedEntityClass($metadata, $path));
         }
-        chmod($path, 0664);
     }
 
     /**
@@ -587,6 +554,15 @@ public function __construct(<params>)
     {
         if (isset($this->typeAlias[$type])) {
             return $this->typeAlias[$type];
+        }
+        if (strpos($type, 'Enum') === 0) {
+            return 'string';
+        }
+        if ($type === 'UuidType') {
+            return 'Uuid';
+        }
+        if ($type === 'StdClassJsonType') {
+            return '\stdClass';
         }
 
         return $type;
@@ -1162,17 +1138,19 @@ public function __construct(<params>)
                 continue;
             }
 
-            if (( ! isset($fieldMapping['id']) ||
+          $nullableField = $this->nullableFieldExpression($fieldMapping);
+
+          if (( ! isset($fieldMapping['id']) ||
                     ! $fieldMapping['id'] ||
                     $metadata->generatorType == ClassMetadataInfo::GENERATOR_TYPE_NONE
                 ) && (! $metadata->isEmbeddedClass || ! $this->embeddablesImmutable)
             ) {
-                if ($code = $this->generateEntityStubMethod($metadata, 'set', $fieldMapping['fieldName'], $fieldMapping['type'])) {
+                if ($code = $this->generateEntityStubMethod($metadata, 'set', $fieldMapping['fieldName'], $fieldMapping['type'], $nullableField)) {
                     $methods[] = $code;
                 }
             }
 
-            if ($code = $this->generateEntityStubMethod($metadata, 'get', $fieldMapping['fieldName'], $fieldMapping['type'])) {
+            if ($code = $this->generateEntityStubMethod($metadata, 'get', $fieldMapping['fieldName'], $fieldMapping['type'], $nullableField)) {
                 $methods[] = $code;
             }
         }
@@ -1199,7 +1177,7 @@ public function __construct(<params>)
                 if ($code = $this->generateEntityStubMethod($metadata, 'set', $associationMapping['fieldName'], $associationMapping['targetEntity'], $nullable)) {
                     $methods[] = $code;
                 }
-                if ($code = $this->generateEntityStubMethod($metadata, 'get', $associationMapping['fieldName'], $associationMapping['targetEntity'])) {
+                if ($code = $this->generateEntityStubMethod($metadata, 'get', $associationMapping['fieldName'], $associationMapping['targetEntity'], $nullable)) {
                     $methods[] = $code;
                 }
             } elseif ($associationMapping['type'] & ClassMetadataInfo::TO_MANY) {
@@ -1366,23 +1344,19 @@ public function __construct(<params>)
         $var = sprintf('%sMethodTemplate', $type);
         $template = static::$$var;
 
-        $methodTypeHint = null;
         $types          = Type::getTypesMap();
         $variableType   = $typeHint ? $this->getType($typeHint) : null;
 
         if ($typeHint && ! isset($types[$typeHint])) {
             $variableType   =  '\\' . ltrim($variableType, '\\');
-            $methodTypeHint =  '\\' . $typeHint . ' ';
         }
 
         $replacements = array(
           '<description>'       => ucfirst($type) . ' ' . $variableName,
-          '<methodTypeHint>'    => $methodTypeHint,
-          '<variableType>'      => $variableType,
+          '<variableType>'      => ($defaultValue !== null ? '?' : '') . $variableType,
           '<variableName>'      => $variableName,
           '<methodName>'        => $methodName,
           '<fieldName>'         => $fieldName,
-          '<variableDefault>'   => ($defaultValue !== null ) ? (' = '.$defaultValue) : '',
           '<entity>'            => $this->getClassName($metadata)
         );
 
@@ -1621,7 +1595,9 @@ public function __construct(<params>)
     {
         $lines = array();
         $lines[] = $this->spaces . '/**';
-        $lines[] = $this->spaces . ' * @var ' . $this->getType($fieldMapping['type']);
+        $lines[] = $this->spaces . ' * @var '
+            . $this->getType($fieldMapping['type'])
+            . ($this->nullableFieldExpression($fieldMapping) ? '|null' : '');
 
         if ($this->generateAnnotations) {
             $lines[] = $this->spaces . ' *';
@@ -1798,6 +1774,19 @@ public function __construct(<params>)
     }
 
     /**
+     * @param array $fieldMapping
+     *
+     * @return string|null
+     */
+    private function nullableFieldExpression(array $fieldMapping)
+    {
+        if (isset($fieldMapping['nullable']) && true === $fieldMapping['nullable']) {
+            return 'null';
+        }
+        return null;
+    }
+
+    /**
      * Exports (nested) option elements.
      *
      * @param array $options
@@ -1817,3 +1806,4 @@ public function __construct(<params>)
         return implode(',', $optionsStr);
     }
 }
+
