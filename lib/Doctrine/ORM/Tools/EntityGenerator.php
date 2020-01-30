@@ -166,6 +166,9 @@ class EntityGenerator
         Type::SIMPLE_ARRAY  => 'array',
         Type::INTEGER       => 'int',
         Type::BOOLEAN       => 'bool',
+        'StdClassJsonType'  => '\stdClass',
+        'TinyIntType'       => 'int',
+        'UuidType'          => 'Uuid',
     );
 
     /**
@@ -558,13 +561,6 @@ public function <methodName>()
         if (strpos($type, 'Enum') === 0) {
             return 'string';
         }
-        if ($type === 'UuidType') {
-            return 'Uuid';
-        }
-        if ($type === 'StdClassJsonType') {
-            return '\stdClass';
-        }
-
         return $type;
     }
 
