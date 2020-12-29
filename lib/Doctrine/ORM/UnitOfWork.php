@@ -49,6 +49,8 @@ use UnexpectedValueException;
 use function get_class;
 use function is_object;
 use function spl_object_hash;
+use HContent\CoreBundle\Entity\ITranslationContaining;
+use HContent\CoreBundle\Doctrine\ORM\CommitDirtyTranslationsEventArgs;
 
 /**
  * The UnitOfWork is responsible for tracking changes to objects during an
@@ -298,6 +300,11 @@ class UnitOfWork implements PropertyChangedListener
     private $reflectionPropertiesGetter;
 
     /**
+     * @var array
+     */
+    private $entityTranslations = [];
+
+    /**
      * Initializes a new UnitOfWork instance, bound to the given EntityManager.
      *
      * @param EntityManagerInterface $em
@@ -353,6 +360,7 @@ class UnitOfWork implements PropertyChangedListener
         if ( ! ($this->entityInsertions ||
                 $this->entityDeletions ||
                 $this->entityUpdates ||
+                $this->entityTranslations ||
                 $this->collectionUpdates ||
                 $this->collectionDeletions ||
                 $this->orphanRemovals)) {
@@ -376,6 +384,13 @@ class UnitOfWork implements PropertyChangedListener
 
         // Now we need a commit order to maintain referential integrity
         $commitOrder = $this->getCommitOrder();
+
+        $commitVars = $this->packCommitVars();
+        $tryCount = 0;
+        $try = true;
+        while ($try) {
+        $try = false;
+        $tryCount++;
 
         $conn = $this->em->getConnection();
         $conn->beginTransaction();
@@ -426,12 +441,43 @@ class UnitOfWork implements PropertyChangedListener
                 }
             }
 
+            if ($this->entityTranslations && $this->evm->hasListeners('commitDirtyTranslations')) {
+                $this->evm->dispatchEvent('commitDirtyTranslations',
+                    new CommitDirtyTranslationsEventArgs($this->entityTranslations));
+            }
+
             // Commit failed silently
             if ($conn->commit() === false) {
                 $object = is_object($entity) ? $entity : null;
 
                 throw new OptimisticLockException('Commit failed', $object);
             }
+        } catch (\Doctrine\DBAL\Exception\DriverException $e) {
+          //For a 40001 (Deadlock) we try the following:
+          // If we are on the top transaction level we issue a full retry of all the transaction changes.
+          // If we are not on the top level transaction we need to let the exception bubble up without closing the
+          // entity manager.
+          // NOTE: Now the entity manager is never closed if you encounter a deadlock and have an open transaction
+          //        outside this method!
+          if ((int)$e->getSQLState() === 40001 && $tryCount < 3) {
+            if ($conn->getTransactionNestingLevel() === 1) {
+              \Application\Logger::warn("Deadlock encountered, retrying ($tryCount)", ['exception' => $e]);
+              $conn->rollback();
+              $this->afterTransactionRolledBack();
+              $this->prepareDeadlockRetry($commitVars);
+              $try = true;
+            } else {
+              //no em->close() here!
+              $conn->rollback();
+              $this->afterTransactionRolledBack();
+              throw $e;
+            }
+          } else {
+            $this->em->close();
+            $conn->rollback();
+            $this->afterTransactionRolledBack();
+            throw $e;
+          }
         } catch (Throwable $e) {
             $this->em->close();
 
@@ -443,6 +489,7 @@ class UnitOfWork implements PropertyChangedListener
 
             throw $e;
         }
+        } //end while($try)
 
         $this->afterTransactionComplete();
 
@@ -470,6 +517,7 @@ class UnitOfWork implements PropertyChangedListener
         $this->collectionDeletions =
         $this->visitedCollections =
         $this->orphanRemovals = [];
+        $this->entityTranslations = [];
 
         if (null === $entity) {
             $this->entityChangeSets = $this->scheduledForSynchronization = [];
@@ -489,6 +537,82 @@ class UnitOfWork implements PropertyChangedListener
             unset($this->scheduledForSynchronization[$this->em->getClassMetadata(\get_class($object))->rootEntityName][$oid]);
         }
     }
+
+  /**
+   * Packs all commit vars into one array for restoring them for a retry after a deadlock situation.
+   * Only for the top level transaction commit (before the transaction began).
+   *
+   * @return array
+   */
+  private function packCommitVars(): array {
+    if ($this->em->getConnection()->getTransactionNestingLevel() === 0) {
+      //keep track of the ids before the commit:
+      $preCommitIdMap = new \SplObjectStorage();
+      foreach ($this->entityInsertions as $entityToInsert) {
+        $class = $this->em->getClassMetadata(get_class($entityToInsert));
+        if ($class->idGenerator->isPostInsertGenerator()) {
+          $preCommitIdMap[$entityToInsert] = $class->reflFields[$class->identifier[0]]->getValue($entityToInsert);
+        }
+      }
+      return [
+        $this->entityInsertions,
+        $this->entityDeletions,
+        $this->entityUpdates,
+        $this->entityTranslations,
+        $this->collectionUpdates,
+        $this->collectionDeletions,
+        $this->orphanRemovals,
+        $this->extraUpdates,
+        $this->entityIdentifiers,
+        $this->entityStates,
+        $this->originalEntityData,
+        $this->entityChangeSets,
+        $this->visitedCollections,
+        $this->scheduledForSynchronization,
+        $this->identityMap,
+        $preCommitIdMap,
+      ];
+    }
+    return [];
+  }
+
+  /**
+   * Restores all the commit vars and resets the ids to retry after a transaction was rolled back due to a deadlock.
+   *
+   * @param array $commitVars
+   */
+  private function prepareDeadlockRetry(array $commitVars): void {
+    //Clear the persister instances:
+    $this->persisters = [];
+
+    //Unpack commit vars:
+    [
+      $this->entityInsertions,
+      $this->entityDeletions,
+      $this->entityUpdates,
+      $this->entityTranslations,
+      $this->collectionUpdates,
+      $this->collectionDeletions,
+      $this->orphanRemovals,
+      $this->extraUpdates,
+      $this->entityIdentifiers,
+      $this->entityStates,
+      $this->originalEntityData,
+      $this->entityChangeSets,
+      $this->visitedCollections,
+      $this->scheduledForSynchronization,
+      $this->identityMap,
+      $preCommitIdMap,
+    ] = $commitVars;
+
+    //Reset ids in new entities to whatever they were before the commit:
+    foreach ($this->entityInsertions as $entityToInsert) {
+      $class = $this->em->getClassMetadata(get_class($entityToInsert));
+      if ($class->idGenerator->isPostInsertGenerator()) {
+        $class->reflFields[$class->identifier[0]]->setValue($entityToInsert, $preCommitIdMap[$entityToInsert]);
+      }
+    }
+  }
 
     /**
      * Computes the changesets of all entities scheduled for insertion.
@@ -801,6 +925,10 @@ class UnitOfWork implements PropertyChangedListener
                 $this->originalEntityData[$oid] = $actualData;
                 $this->entityUpdates[$oid]      = $entity;
             }
+        }
+
+        if ($entity instanceof ITranslationContaining && $entity->hasDirtyTranslations()) {
+            $this->entityTranslations[$oid] = $entity;
         }
     }
 
@@ -3638,5 +3766,13 @@ class UnitOfWork implements PropertyChangedListener
             $identifierValue,
             $class->getTypeOfField($class->getSingleIdentifierFieldName())
         );
+    }
+
+    /**
+     * @return \Doctrine\ORM\Utility\IdentifierFlattener
+     */
+    public function getIdentifierFlattener()
+    {
+        return $this->identifierFlattener;
     }
 }

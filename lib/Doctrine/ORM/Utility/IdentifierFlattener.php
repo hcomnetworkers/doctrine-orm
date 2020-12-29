@@ -22,6 +22,7 @@ namespace Doctrine\ORM\Utility;
 use Doctrine\ORM\UnitOfWork;
 use Doctrine\ORM\Mapping\ClassMetadata;
 use Doctrine\Persistence\Mapping\ClassMetadataFactory;
+use HContent\CoreBundle\Library\Uuid\Uuid;
 
 /**
  * The IdentifierFlattener utility now houses some of the identifier manipulation logic from unit of work, so that it
@@ -71,7 +72,7 @@ final class IdentifierFlattener
         $flatId = [];
 
         foreach ($class->identifier as $field) {
-            if (isset($class->associationMappings[$field]) && isset($id[$field]) && is_object($id[$field])) {
+            if (isset($class->associationMappings[$field]) && isset($id[$field]) && is_object($id[$field]) && !($id[$field] instanceof Uuid)) {
                 /* @var $targetClassMetadata ClassMetadata */
                 $targetClassMetadata = $this->metadataFactory->getMetadataFor(
                     $class->associationMappings[$field]['targetEntity']
