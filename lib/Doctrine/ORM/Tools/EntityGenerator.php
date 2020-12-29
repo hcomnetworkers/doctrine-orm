@@ -175,6 +175,9 @@ class EntityGenerator
         Type::JSON_ARRAY    => 'array',
         Type::SIMPLE_ARRAY  => 'array',
         Type::BOOLEAN       => 'bool',
+        'StdClassJsonType'  => '\stdClass',
+        'TinyIntType'       => 'int',
+        'UuidType'          => 'Uuid',
     ];
 
     /**
@@ -222,10 +225,13 @@ class EntityGenerator
 '<?php
 
 <namespace>
-<useStatement>
-<entityAnnotation>
-<entityClassName>
-{
+
+use HContent\CoreBundle\Library\Uuid\Uuid;
+
+/**
+ * @codeCoverageIgnore
+ */
+<entityClassName> {
 <entityBody>
 }
 ';
@@ -234,13 +240,7 @@ class EntityGenerator
      * @var string
      */
     protected static $getMethodTemplate =
-'/**
- * <description>
- *
- * @return <variableType>
- */
-public function <methodName>()
-{
+'public function <methodName>(): <variableType> {
 <spaces>return $this-><fieldName>;
 }';
 
@@ -248,15 +248,7 @@ public function <methodName>()
      * @var string
      */
     protected static $setMethodTemplate =
-'/**
- * <description>
- *
- * @param <variableType> $<variableName>
- *
- * @return <entity>
- */
-public function <methodName>(<methodTypeHint>$<variableName><variableDefault>)
-{
+'public function <methodName>(<variableType> $<variableName>): <entity> {
 <spaces>$this-><fieldName> = $<variableName>;
 
 <spaces>return $this;
@@ -266,15 +258,7 @@ public function <methodName>(<methodTypeHint>$<variableName><variableDefault>)
      * @var string
      */
     protected static $addMethodTemplate =
-'/**
- * <description>
- *
- * @param <variableType> $<variableName>
- *
- * @return <entity>
- */
-public function <methodName>(<methodTypeHint>$<variableName>)
-{
+'public function <methodName>(<variableType> $<variableName>): <entity> {
 <spaces>$this-><fieldName>[] = $<variableName>;
 
 <spaces>return $this;
@@ -285,14 +269,9 @@ public function <methodName>(<methodTypeHint>$<variableName>)
      */
     protected static $removeMethodTemplate =
 '/**
- * <description>
- *
- * @param <variableType> $<variableName>
- *
  * @return boolean TRUE if this collection contained the specified element, FALSE otherwise.
  */
-public function <methodName>(<methodTypeHint>$<variableName>)
-{
+public function <methodName>(<variableType> $<variableName>): bool {
 <spaces>return $this-><fieldName>->removeElement($<variableName>);
 }';
 
@@ -312,11 +291,7 @@ public function <methodName>()
      * @var string
      */
     protected static $constructorMethodTemplate =
-'/**
- * Constructor
- */
-public function __construct()
-{
+'public function __construct() {
 <spaces><collections>
 }
 ';
@@ -325,13 +300,7 @@ public function __construct()
      * @var string
      */
     protected static $embeddableConstructorMethodTemplate =
-'/**
- * Constructor
- *
- * <paramTags>
- */
-public function __construct(<params>)
-{
+'public function __construct(<params>) {
 <spaces><fields>
 }
 ';
@@ -354,10 +323,10 @@ public function __construct(<params>)
      *
      * @return void
      */
-    public function generate(array $metadatas, $outputDirectory)
+    public function generate(array $metadatas, $outputDirectory, bool $isPsr4 = false)
     {
         foreach ($metadatas as $metadata) {
-            $this->writeEntityClass($metadata, $outputDirectory);
+            $this->writeEntityClass($metadata, $outputDirectory, $isPsr4);
         }
     }
 
@@ -371,9 +340,13 @@ public function __construct(<params>)
      *
      * @throws \RuntimeException
      */
-    public function writeEntityClass(ClassMetadataInfo $metadata, $outputDirectory)
+    public function writeEntityClass(ClassMetadataInfo $metadata, $outputDirectory, bool $isPsr4 = false)
     {
-        $path = $outputDirectory . '/' . str_replace('\\', DIRECTORY_SEPARATOR, $metadata->name) . $this->extension;
+        if ($isPsr4) {
+            $path = $outputDirectory . '/' . basename(str_replace('\\', '/', $metadata->name)) . $this->extension;
+        } else {
+            $path = $outputDirectory . '/' . str_replace('\\', DIRECTORY_SEPARATOR, $metadata->name) . $this->extension;
+        }
         $dir = dirname($path);
 
         if ( ! is_dir($dir)) {
@@ -402,7 +375,7 @@ public function __construct(<params>)
         } elseif ($this->updateEntityIfExists) {
             file_put_contents($path, $this->generateUpdatedEntityClass($metadata, $path));
         }
-        chmod($path, 0664);
+        //chmod($path, 0664); //does not work with the docker user
     }
 
     /**
@@ -603,7 +576,9 @@ public function __construct(<params>)
         if (isset($this->typeAlias[$type])) {
             return $this->typeAlias[$type];
         }
-
+        if (strpos($type, 'Enum') === 0) {
+            return 'string';
+        }
         return $type;
     }
 
@@ -1407,7 +1382,7 @@ public function __construct(<params>)
         $replacements = [
           '<description>'       => ucfirst($type) . ' ' . $variableName . '.',
           '<methodTypeHint>'    => $methodTypeHint,
-          '<variableType>'      => $variableType . (null !== $defaultValue ? ('|' . $defaultValue) : ''),
+          '<variableType>'      => ($defaultValue !== null ? '?' : '') . $variableType,
           '<variableName>'      => $variableName,
           '<methodName>'        => $methodName,
           '<fieldName>'         => $fieldName,

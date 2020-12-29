@@ -960,4 +960,36 @@ use function trigger_error;
                 }
         }
     }
+
+    /**
+     * Cache for entity metas mapped by table name
+     * @var ClassMetadata[]
+     */
+    private $cacheTableToMetas;
+
+    /**
+     * Gets the entity metadata for a table name
+     */
+    public function getEntityMetasForTable(string $table): ?ClassMetadata {
+        if (!$this->cacheTableToMetas) {
+            $this->cacheTableToMetas = [];
+            $classNames = $this->getConfiguration()->getMetadataDriverImpl()->getAllClassNames();
+            foreach ($classNames as $className) {
+                $classMetaData = $this->getClassMetadata($className);
+                $this->cacheTableToMetas[$classMetaData->getTableName()] = $classMetaData;
+            }
+        }
+        return $this->cacheTableToMetas[$table] ?? null;
+    }
+
+    /**
+     * Gets a repository for a table name
+     */
+    public function getRepositoryForTable(string $table): EntityRepository {
+        $meta = $this->getEntityMetasForTable($table);
+        if ($meta) {
+            return $this->getRepository($meta->getName());
+        }
+        throw new \InvalidArgumentException("Table $table has no corresponding entity");
+    }
 }
